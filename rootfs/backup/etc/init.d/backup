@@ -68,10 +68,12 @@ while [ ! -e /var/run/clock-set ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n + 1));
 # What the kernel logged up to the last reset (watchdog, panic), kept by pstore in RAM: filed
 # here, then cleared (an entry deleted frees its ramoops record). Nothing after a power cut.
 P=/sys/fs/pstore
-if [ -n "$(ls -A "$P" 2>/dev/null)" ]; then
+names=
+for f in "$P"/*; do [ -e "$f" ] && names="$names ${f##*/}"; done
+if [ -n "$names" ]; then
     dst="$L/pstore-$(date -u '+%Y%m%dT%H%M%SZ')"
     mkdir -p "$dst" && cp "$P"/* "$dst"/ && rm -f "$P"/* \
-        && logger -t backup "pstore: the previous boot left $(ls "$dst" | tr '\n' ' ')in $dst"
+        && logger -t backup "pstore: the previous boot left$names, filed in $dst"
 fi
 
 # First SMART report now; crond (inittab, crontab written by rcS) runs it hourly after
