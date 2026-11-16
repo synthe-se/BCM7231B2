@@ -11,6 +11,9 @@ echo "[init] Starting AirTies..."
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
+# What the kernel logged before the last reset (ramoops, DT reserved-memory): the backup script
+# files it on the disk (system/log/pstore-*), or read it here while /sys/fs/pstore holds it
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 mkdir -p /dev/pts /dev/shm
 mount -t devpts devpts /dev/pts
@@ -134,6 +137,10 @@ step sshd
 [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
 
 touch /var/run/rcS.done
+# From here on the watchdog is petted only while the box's loops still turn (wdt-pet): BusyBox's
+# daemon kept petting through a 6 h freeze on 2026-11-16 (logging stopped, wifi-watch stuck)
+step wdt-pet
+start-stop-daemon -S -b -x /usr/sbin/wdt-pet </dev/null >/dev/null 2>&1
 step "done"
 # The box's state, at getty's login prompt and SSH logins (rewritten as it changes: the DHCP
 # lease, the clock, the disk)

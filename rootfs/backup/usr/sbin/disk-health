@@ -16,4 +16,18 @@ for h in $hosts; do
     c="$D/vykar-$h"
     cp "$tmp" "$c/.disk-health.tmp" && chmod 644 "$c/.disk-health.tmp" && mv -f "$c/.disk-health.tmp" "$c/disk-health"
 done
+# The counters that move before a disk or its link fails, one line an hour (~400 KB a year): the
+# report above only holds the latest, and on 2026-11-16 nothing said whether the SATA link's CRC
+# errors (199) had grown during a freeze. 5/196 reallocated, 187 uncorrectable, 188 command
+# timeouts, 197/198 pending/offline uncorrectable, 199 UDMA CRC (cable, link, power).
+awk -v t="$(date -u '+%FT%TZ')" '
+    /"id":/ { gsub(/[^0-9]/, "", $2); id = $2 }
+    /"raw": \{/ { raw = 1; next }
+    raw && /"value":/ {
+        gsub(/[^0-9]/, "", $2)
+        if (id ~ /^(5|187|188|196|197|198|199)$/) line = line " " id "=" $2
+        raw = 0
+    }
+    END { if (line != "") print t line }
+' "$tmp" >> "$D/system/log/smart-history.log"
 rm -f "$tmp"

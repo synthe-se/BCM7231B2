@@ -274,6 +274,23 @@ only ever sees ciphertext). Pieces, mostly started by `/etc/init.d/backup`
 - **WiFi watch** (any box with WiFi): `/usr/sbin/wifi-watch` pings the
   gateway every minute; 3 minutes without an answer restart WiFi, 8 reboot
   cleanly. The hardware watchdog only catches a hung kernel, not a dead link.
+- **Watchdog on health**: once `rcS` is done, `/usr/sbin/wdt-pet` takes
+  `/dev/watchdog` from BusyBox's `watchdog` and pets it only while every
+  beat in `/var/run/beat/` is fresh: `wifi-watch` (each turn) and
+  `disk-beat` (a write + fsync on the disk every minute), 5 minutes each.
+  A stuck loop or disk write means a hardware reset 60 s later. Killed
+  without the magic close, it leaves the watchdog armed, so a hung reboot
+  gets reset too. On 2026-11-16 BusyBox's daemon kept petting through a 6 h
+  freeze (logging stopped, `wifi-watch` stuck before its reboot, no panic).
+  Escape hatch if a beat goes stale at every boot: `touch /etc/wdt-pet.off`
+  (persistent overlay) in the minutes after a boot.
+- **pstore**: 1 MB of RAM at 128 MB (DT `reserved-memory/ramoops`) keeps the
+  kernel log across a watchdog reset or a panic (not a power cut). `rcS`
+  mounts `/sys/fs/pstore`; the backup script files it as
+  `system/log/pstore-<time>/` and clears it.
+- **SMART history**: `disk-health` also appends the counters that move
+  before a failure (5, 187, 188, 196 to 199) to
+  `system/log/smart-history.log`, one line an hour.
 
 ### Setting it up
 

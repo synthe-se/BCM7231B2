@@ -22,6 +22,26 @@
 		      <0x20000000 0x10000000>;
 	};
 
+	/* ramoops (pstore): the kernel log of the boot that ended, kept across a warm reset (watchdog,
+	 * panic), lost to a power cut. 1 MB at 128 MB: away from the kernel CFE loads at 0x1000, the
+	 * DVB rings at 12 MB and the top of the first bank, where CFE may sit. console: the whole
+	 * kernel log as it goes (wdt-pet's last words included); record: a panic's dump; pmsg: what
+	 * userspace writes to /dev/pmsg0. */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		ramoops@8000000 {
+			compatible = "ramoops";
+			reg = <0x08000000 0x00100000>;
+			record-size = <0x00020000>;
+			console-size = <0x00080000>;
+			pmsg-size = <0x00020000>;
+			ecc-size = <16>;
+		};
+	};
+
 	chosen {
 		/* libata.force: the SATA link fails 8b/10b decoding (BadCRC, Dispar)
 		 * at 6 and 3 Gbps on this board; 1.5 Gbps is stable and still beyond

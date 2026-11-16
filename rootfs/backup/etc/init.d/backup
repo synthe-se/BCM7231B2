@@ -54,10 +54,25 @@ for h in $hosts; do
 done
 touch /var/run/backup-ready   # sshd-backup-run opens port 2222
 
+# A write that never returns stops its beats, and wdt-pet the watchdog (one beater)
+W=/var/run/disk-beat.pid
+if [ ! -f "$W" ] || ! kill -0 "$(cat "$W" 2>/dev/null)" 2>/dev/null; then
+    start-stop-daemon -S -b -m -p "$W" -x /usr/sbin/disk-beat
+fi
+
 # Clock first: the SMART report carries its time, the servers judge its age
 # (/usr/sbin/ntp-event marks it set at ntpd's first sync)
 n=0
 while [ ! -e /var/run/clock-set ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n + 1)); done
+
+# What the kernel logged up to the last reset (watchdog, panic), kept by pstore in RAM: filed
+# here, then cleared (an entry deleted frees its ramoops record). Nothing after a power cut.
+P=/sys/fs/pstore
+if [ -n "$(ls -A "$P" 2>/dev/null)" ]; then
+    dst="$L/pstore-$(date -u '+%Y%m%dT%H%M%SZ')"
+    mkdir -p "$dst" && cp "$P"/* "$dst"/ && rm -f "$P"/* \
+        && logger -t backup "pstore: the previous boot left $(ls "$dst" | tr '\n' ' ')in $dst"
+fi
 
 # First SMART report now; crond (inittab, crontab written by rcS) runs it hourly after
 /usr/sbin/disk-health

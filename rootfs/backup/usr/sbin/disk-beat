@@ -1,0 +1,17 @@
+#!/bin/sh
+# disk-beat: proves every minute that the backup disk still takes a write, for wdt-pet. Writes
+# the uptime to system/heartbeat and waits for it to reach the platter (fsync), then beats
+# (/var/run/beat/disk). A write that never returns stops the beats: 5 minutes later wdt-pet stops
+# petting and the hardware watchdog resets the box. A write that fails (disk full, I/O error)
+# still beats: a reset would not fix it, the SMART report and the servers will tell. Started by
+# /etc/init.d/backup once the disk is mounted.
+D=/srv/backup
+B=/var/run/beat
+mkdir -p "$B"
+while :; do
+    read -r now _ < /proc/uptime; now=${now%.*}
+    echo "$now" | dd of="$D/system/heartbeat" conv=fsync 2>/dev/null \
+        || echo "<4>disk-beat: heartbeat write failed" > /dev/kmsg
+    echo "$now 300" > "$B/disk"
+    sleep 60
+done

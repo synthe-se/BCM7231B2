@@ -1,0 +1,54 @@
+#!/bin/sh
+# wdt-pet: pets the hardware watchdog (bcm7038-wdt, 60 s) only while the box's own loops still
+# turn. Each loop that must not stall writes "<uptime> <max age>" to /var/run/beat/<name> every
+# turn (wifi-watch, disk-beat); one beat older than its max age and the petting stops: hardware
+# reset 60 s later, whatever is stuck. Started by rcS once it is done, in place of BusyBox's
+# watchdog, which pets from its own process whatever the rest does.
+#
+# Why (2026-11-16): the WiFi dongle failed under the backups at 01:14, logging stopped at
+# 01:19:56, wifi-watch never reached its reboot, no panic (no hung task, no RCU stall), and the
+# watchdog daemon kept petting: frozen until a power cycle at 07:03.
+#
+# The reason goes to the kernel log (/dev/kmsg, never blocks on syslogd), which pstore keeps
+# across the reset: the backup script files it under system/log/pstore-*.
+# Escape hatch (a stale beat at every boot = a reset every few minutes): touch /etc/wdt-pet.off
+# within the first minutes after boot (/etc is on the persistent overlay); the petting then never
+# stops, as before.
+B=/var/run/beat
+mkdir -p "$B"
+# /dev/watchdog takes one opener: BusyBox's watchdog lets it go (stopping it disarms the
+# hardware, its timeout stays 60 s), then this process takes it.
+killall watchdog 2>/dev/null
+n=0
+while pidof watchdog >/dev/null 2>&1 && [ "$n" -lt 50 ]; do usleep 100000; n=$((n + 1)); done
+# Closed without the magic 'V' (this process killed, at shutdown or otherwise), the watchdog
+# stays armed: a reboot that hangs is reset too.
+if ! command exec 3>/dev/watchdog; then
+    echo "<3>wdt-pet: cannot open /dev/watchdog, BusyBox's watchdog takes it back" > /dev/kmsg
+    exec watchdog -F -T 60 -t 10 /dev/watchdog
+fi
+echo "<5>wdt-pet: petting /dev/watchdog while every beat in $B is fresh" > /dev/kmsg
+while :; do
+    read -r now _ < /proc/uptime; now=${now%.*}
+    stale=
+    for f in "$B"/*; do
+        [ -f "$f" ] || continue
+        read -r t max < "$f" || continue
+        [ -n "$t" ] && [ -n "$max" ] || continue
+        [ $((now - t)) -gt "$max" ] && stale="$stale ${f##*/} ($((now - t)) s)"
+    done
+    if [ -n "$stale" ]; then
+        if [ -e /etc/wdt-pet.off ]; then
+            [ -z "$warned" ] && echo "<4>wdt-pet: stale:$stale, ignored (/etc/wdt-pet.off)" > /dev/kmsg
+            warned=1
+        else
+            echo "<2>wdt-pet: stale:$stale; petting stops, hardware reset in 60 s" > /dev/kmsg
+            # keep the device open, never pet again
+            while :; do sleep 3600; done
+        fi
+    else
+        warned=
+    fi
+    echo . >&3
+    sleep 10
+done
