@@ -1,0 +1,33 @@
+#!/bin/sh
+# eth0 is the only way in: when the gateway stops answering, bring the link down and up and ask
+# for a new lease (3 min), then reboot cleanly (8 min: the PHY or its driver is gone). The hardware
+# watchdog only catches a hung kernel, not a dead link.
+# Each turn beats for wdt-pet (/var/run/beat/link-watch, 5 minutes max): on 2026-11-16 this loop
+# (then over WiFi) stalled after its first "unreachable" line (logging had stopped), never reached
+# its reboot, and the box stayed frozen 6 h. A loop that stalls now gets the box reset by the
+# hardware watchdog. Started by rcS.
+B=/var/run/beat
+mkdir -p "$B"
+fails=0
+while :; do
+    read -r now _ < /proc/uptime; echo "${now%.*} 300" > "$B/link-watch"
+    sleep 60
+    gw=$(ip route | awk '/^default/ && /eth0/ {print $3; exit}')
+    # No lease, no gateway (the recovery cable, a DHCP server down): udhcpc keeps asking, a
+    # restart would not help it
+    [ -n "$gw" ] || { fails=0; continue; }
+    if ping -c 2 -W 3 "$gw" >/dev/null 2>&1; then
+        [ "$fails" -gt 0 ] && logger -t link-watch "gateway $gw back after $fails min"
+        fails=0; continue
+    fi
+    fails=$((fails + 1))
+    logger -t link-watch "gateway $gw unreachable ($fails min)"
+    case "$fails" in
+        3) logger -t link-watch "restarting eth0"
+           ifconfig eth0 down 2>/dev/null; sleep 2; ifconfig eth0 up 2>/dev/null
+           # udhcpc (rcS) asks for a lease again on SIGUSR1
+           kill -USR1 "$(cat /var/run/udhcpc.eth0.pid 2>/dev/null)" 2>/dev/null ;;
+        8) logger -t link-watch "eth0 still down: rebooting"
+           sync; reboot ;;
+    esac
+done

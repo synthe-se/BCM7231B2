@@ -5,19 +5,12 @@
 . /etc/firmware-release
 model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
 role=""; [ -x /etc/init.d/backup ] && role=" · off-site backup target"
-ip4() { ip -4 -o addr show "$1" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'; }
+ip4() { ip -4 -o addr show dev "$1" label "$1" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'; }
 net=""
-for i in wlan0 eth0; do
-    # a live link only: eth0 keeps its fallback address with no cable plugged in
-    [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] || continue
-    a=$(ip4 "$i"); [ -n "$a" ] || continue
-    band=""
-    if [ "$i" = wlan0 ]; then
-        f=$(wpa_cli -i wlan0 status 2>/dev/null | sed -n 's/^freq=//p')
-        [ -n "$f" ] && band=" ($([ "$f" -gt 4000 ] && echo 5 || echo 2.4) GHz)"
-    fi
-    net="${net:+$net · }$i $a$band"
-done
+# a live link only: eth0 keeps its recovery address with no cable plugged in
+if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]; then
+    a=$(ip4 eth0); [ -n "$a" ] && net="eth0 $a"
+fi
 backup="not mounted"
 if mountpoint -q /srv/backup; then
     backup=$(df -k /srv/backup | awk 'NR == 2 {printf "%d %% of %.0f GiB used", $5, $2 / 1048576}')

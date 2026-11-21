@@ -1,12 +1,12 @@
 #!/bin/sh
 # wdt-pet: pets the hardware watchdog (bcm7038-wdt, 60 s) only while the box's own loops still
 # turn. Each loop that must not stall writes "<uptime> <max age>" to /var/run/beat/<name> every
-# turn (wifi-watch, disk-beat); one beat older than its max age and the petting stops: hardware
+# turn (link-watch, disk-beat); one beat older than its max age and the petting stops: hardware
 # reset 60 s later, whatever is stuck. Started by rcS once it is done, in place of BusyBox's
 # watchdog, which pets from its own process whatever the rest does.
 #
 # Why (2026-11-16): the WiFi dongle failed under the backups at 01:14, logging stopped at
-# 01:19:56, wifi-watch never reached its reboot, no panic (no hung task, no RCU stall), and the
+# 01:19:56, its watch (now link-watch) never reached its reboot, no panic (no hung task, no RCU stall), and the
 # watchdog daemon kept petting: frozen until a power cycle at 07:03.
 #
 # The reason goes to the kernel log (/dev/kmsg, never blocks on syslogd), which pstore keeps

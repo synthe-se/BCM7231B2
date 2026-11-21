@@ -3,8 +3,8 @@
 # sources the build scripts download from. Host-side, read-only: prints a table, changes nothing.
 # Exit 0 when everything is current, 1 when an update exists, 2 when a source could not be asked.
 #
-# Env (set by the Makefile): KERNEL_VERSION BUSYBOX_VERSION MTDUTILS_VERSION WPA_VERSION
-# LIBNL_VERSION E2FSPROGS_VERSION OPENSSH_VERSION ZLIB_VERSION SMARTMONTOOLS_VERSION
+# Env (set by the Makefile): KERNEL_VERSION BUSYBOX_VERSION MTDUTILS_VERSION E2FSPROGS_VERSION
+# OPENSSH_VERSION ZLIB_VERSION SMARTMONTOOLS_VERSION
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -24,13 +24,12 @@ tc=$(sed -nE 's/.*mips32el--musl--stable-([0-9.]+-[0-9]+)\.tar\.xz.*/\1/p' docke
 nightly=$(sed -nE 's/.*--default-toolchain (nightly-[0-9-]+).*/\1/p' docker/Dockerfile.builder)
 
 # The components, in table order; latest <name> asks upstream for each
-NAMES=(linux-series linux-stable busybox openssh zlib wpa_supplicant libnl mtd-utils e2fsprogs
+NAMES=(linux-series linux-stable busybox openssh zlib mtd-utils e2fsprogs
     smartmontools toolchain)
 pinned() {
     case "$1" in
         linux-*) echo "$KERNEL_VERSION" ;;           busybox) echo "$BUSYBOX_VERSION" ;;
         openssh) echo "$OPENSSH_VERSION" ;;          zlib) echo "$ZLIB_VERSION" ;;
-        wpa_supplicant) echo "$WPA_VERSION" ;;       libnl) echo "$LIBNL_VERSION" ;;
         mtd-utils) echo "$MTDUTILS_VERSION" ;;       e2fsprogs) echo "$E2FSPROGS_VERSION" ;;
         smartmontools) echo "$SMARTMONTOOLS_VERSION" ;; toolchain) echo "$tc" ;;
     esac
@@ -44,8 +43,6 @@ latest() {
         busybox)      index https://busybox.net/downloads/ 'busybox-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.bz2' ;;
         openssh)      index https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/ 'openssh-([0-9]+\.[0-9]+p[0-9]+)\.tar\.gz' ;;
         zlib)         index https://zlib.net/ 'zlib-([0-9]+\.[0-9]+(\.[0-9]+)?)\.tar\.xz' ;;
-        wpa_supplicant) index https://w1.fi/releases/ 'wpa_supplicant-([0-9]+\.[0-9]+)\.tar\.gz' ;;
-        libnl)        github thom311/libnl libnl ;;
         mtd-utils)    index https://infraroot.at/pub/mtd/ 'mtd-utils-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.bz2' ;;
         e2fsprogs)    index https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/ 'v([0-9]+\.[0-9]+\.[0-9]+)/' ;;
         smartmontools) github smartmontools/smartmontools RELEASE_ ;;
@@ -83,7 +80,7 @@ for n in "${NAMES[@]}"; do
     fi
     line "$(label "$n")" "$pinned" "${latest:--}" "$status"
 done
-line "rust nightly (kird)" "$nightly" "-" "dated nightly, moved by hand"
+line "rust nightly" "$nightly" "-" "dated nightly, moved by hand"
 
 echo
 [ "$updates" -gt 0 ] && echo "  $updates update(s): bump the version in the Makefile (or the Dockerfile), rebuild, test on the box."

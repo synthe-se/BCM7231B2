@@ -3,11 +3,15 @@
 # kills what is left. Init does not respawn anything while this runs.
 echo "[shutdown] Stopping services..."
 # the supervise loops first, or they would start syslogd and klogd again
-killall supervise wifi-watch kird crond ntpd 2>/dev/null
+killall supervise link-watch crond ntpd 2>/dev/null
+# the Maison role's services (init's respawn lines, already told to stop)
+killall maison-backend mosquitto clapier 2>/dev/null
 # the SFTP sessions hold files open on the backup disk
 killall sshd sshd-session 2>/dev/null
-killall wpa_supplicant udhcpc 2>/dev/null
+killall udhcpc 2>/dev/null
 sync
+# Maison's photos live in an image on the backup disk: they go first
+mountpoint -q /srv/maison && umount /srv/maison 2>/dev/null
 if mountpoint -q /srv/backup; then
     echo "[shutdown] Unmounting /srv/backup..."
     killall syslogd klogd 2>/dev/null   # syslogd writes its log on the disk
