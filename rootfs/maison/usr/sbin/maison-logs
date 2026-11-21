@@ -1,0 +1,16 @@
+#!/bin/sh
+# maison-logs [stack|backend|mosquitto|clapier]: follows the Maison role's services in syslog,
+# wherever it is kept (the backup disk once mounted, RAM before). Maison's deploy.sh logs.
+case "${1:-stack}" in
+    stack) tags='maison|mosquitto|clapier' ;;
+    backend|maison) tags='maison' ;;
+    mosquitto) tags='mosquitto' ;;
+    clapier) tags='clapier' ;;
+    *) echo "maison-logs: stack, backend, mosquitto or clapier, not $1" >&2; exit 1 ;;
+esac
+log=/srv/backup/system/log/messages
+if [ -e /var/run/syslog-on-disk ] && [ -f "$log" ]; then
+    tail -f "$log" | grep -E " ($tags)(\[[0-9]+\])?: "
+else
+    logread -f | grep -E " ($tags)(\[[0-9]+\])?: "
+fi

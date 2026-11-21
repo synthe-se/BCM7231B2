@@ -10,7 +10,7 @@ FROM --platform=linux/amd64 ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Build deps of every target. Kernel: bc, flex, bison, libssl, libelf, cpio, kmod.
-# Userland: the rest; pkg-config for libnl (3.12's configure requires it).
+# Userland: the rest; pkg-config for nftables (it finds libmnl and libnftnl through it).
 # mtd-utils: mkfs.ubifs + ubinize, which pack the rootfs (make ubi).
 RUN apt-get update -qq \
     && apt-get install -y -qq \
@@ -36,14 +36,14 @@ RUN CROSS=$(ls /opt/toolchain/bin/*-gcc | head -1 | sed 's/-gcc$//' | xargs base
     && echo "$CROSS" > /opt/cross-prefix \
     && echo "Cross prefix: $CROSS"
 
-# Rust nightly + rust-src for the kird daemon: mipsel-unknown-linux-musl is
-# Tier 3 (no prebuilt std) AND defaults to MIPS32 R2, so kird builds std from
-# source against a custom R1 target spec (see scripts/kird-build.sh).
+# Rust nightly + rust-src for the box's Rust programs (maison-backend): mipsel-unknown-linux-musl
+# is Tier 3 (no prebuilt std) AND defaults to MIPS32 R2, so they build std from source against a
+# custom R1 target spec (see scripts/rust-build.sh).
 # Last layer: refreshing Rust never invalidates the C toolchain cache.
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 RUN wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
     && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-10-23 \
+    && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-11-21 \
         --component rust-src \
     && rm /tmp/rustup-init
 ENV PATH=/opt/cargo/bin:$PATH

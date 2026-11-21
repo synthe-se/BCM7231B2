@@ -1,0 +1,24 @@
+#!/bin/sh
+# Maison's backend as the user maison (in the group dialout too: the Zigbee dongle), its log into
+# syslog. Kept up by init (inittab respawn). Maison's deploy.sh puts it under /opt/maison as on
+# any host: backend/target/release/maison-backend, web/build, .env; until then, or while its
+# `stopped` file says so (deploy.sh stop), this waits.
+D=/opt/maison
+BIN=$D/backend/target/release/maison-backend
+if [ ! -x "$BIN" ] || [ ! -f "$D/.env" ] || [ -e "$D/stopped" ]; then
+    sleep 60
+    exit 0
+fi
+cd "$D" || exit 1
+# The backend reads .env itself. NO_COLOR: no ANSI colors in syslog. SSL_CERT_FILE: the image's
+# CA bundle (the public services: Tempo, the weather).
+export MAISON_SOURCE_ROOT=$D NO_COLOR=1 SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+# Reached from the internet (its edge listener), on the box that keeps the servers' backups:
+# no privilege it could ever gain (no_new_privs), 256 MB at most (its data, stack and locked
+# memory), and the kernel's first choice when memory runs out, before sshd and the backups. Its
+# photos are a file system of their own (/srv/maison, the backup script); the backups' disk is
+# not its to see (/srv/backup 0711, every repository 0700 to its account).
+echo 800 > /proc/self/oom_score_adj
+# su, not chpst -u: BusyBox's chpst sets no supplementary group (dialout); su keeps this
+# environment (no -l)
+setpriv --nnp chpst -m 268435456 su -s /bin/sh maison -c "exec $BIN" 2>&1 | logger -t maison

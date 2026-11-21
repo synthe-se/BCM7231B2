@@ -1,0 +1,20 @@
+#!/bin/sh
+# clapier, the Nabaztag's server, as the user clapier, its log into syslog. Kept up by init
+# (inittab respawn). Its data lives under /opt/clapier: overlay/, garenne.bin (the rabbit's
+# bytecode) and clapier.conf, which holds its arguments for this house (CLAPIER_ARGS, e.g.
+# --bind 0.0.0.0:80 --overlay /opt/clapier/overlay --garenne /opt/clapier/garenne.bin
+# --rabbit <its address>). Until that file exists, this waits.
+D=/opt/clapier
+if [ ! -x /usr/sbin/clapier ] || [ ! -f "$D/clapier.conf" ]; then
+    sleep 60
+    exit 0
+fi
+CLAPIER_ARGS=
+# shellcheck source=/dev/null  # the house's, on /opt
+. "$D/clapier.conf"
+cd "$D" || exit 1
+export RUST_LOG="${RUST_LOG:-info}" NO_COLOR=1
+# Served to the LAN: no privilege to gain, 64 MB at most, killed before sshd and the backups
+echo 600 > /proc/self/oom_score_adj
+# shellcheck disable=SC2086  # the arguments, split on purpose
+setpriv --nnp chpst -u clapier:clapier -m 67108864 /usr/sbin/clapier $CLAPIER_ARGS 2>&1 | logger -t clapier

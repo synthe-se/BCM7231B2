@@ -5,23 +5,29 @@
 #
 #   make help                          list targets
 #   make all                           kernel + rootfs UBI image (everything needed to flash)
-#   make kernel KERNEL_VERSION=7.2.15  try another kernel
+#   make kernel KERNEL_VERSION=7.3.1   try another kernel
 
-KERNEL_VERSION   ?= 7.3.1
+KERNEL_VERSION   ?= 7.3.5
 # DVB=1 builds the DVB-T adapter (XPT + 2x MxL101SF, kernel/bcm7231-dvb.c) into the kernel. Off
 # by default: the box serves as a backup target, not a TV tuner.
 DVB              ?= 0
-# WIFI_DEBUG=1 adds debugfs and rtw88/mac80211 diagnostics (kernel/config/debug-wifi.config)
-WIFI_DEBUG       ?= 0
 BUSYBOX_VERSION  ?= 1.38.0
 MTDUTILS_VERSION ?= 2.3.1
-WPA_VERSION      ?= 2.12
-LIBNL_VERSION    ?= 3.12.0
 # Backup target: ext4 tools, chroot SFTP, SMART
 E2FSPROGS_VERSION     ?= 1.47.4
 OPENSSH_VERSION       ?= 10.6p2
-ZLIB_VERSION          ?= 1.3.2
+ZLIB_VERSION          ?= 1.4
 SMARTMONTOOLS_VERSION ?= 7.5
+# Maison role: the Meross plugs' broker (TLS) and its firewall. The image's one OpenSSL:
+# mosquitto's, and the Rust programs' that link it (rust-build.sh)
+MOSQUITTO_VERSION     ?= 2.1.4
+OPENSSL_VERSION       ?= 4.1.0
+CJSON_VERSION         ?= 1.7.19
+NFTABLES_VERSION      ?= 1.1.7
+LIBNFTNL_VERSION      ?= 1.3.2
+LIBMNL_VERSION        ?= 1.0.5
+# Mozilla's CA bundle as curl.se extracts it (Maison's backend: the public services' TLS)
+CACERT_DATE           ?= 2026-11-05
 
 BUILDER_IMAGE ?= airties-builder
 KBUILD_VOLUME ?= airties-kbuild
@@ -50,18 +56,21 @@ DOCKER_RUN = docker run --rm --platform linux/amd64 \
 
 # Kernel additionally gets a named volume so the source tree (and object
 # files) persist across builds: incremental rebuilds instead of 30 minutes.
-DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e DVB=$(DVB) -e WIFI_DEBUG=$(WIFI_DEBUG) -w /work,$(DOCKER_RUN))
+DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e DVB=$(DVB) -w /work,$(DOCKER_RUN))
 
-# kird gets a named volume for the cargo registry so build-std's crate
-# downloads survive between builds.
-DOCKER_RUN_KIRD = $(subst -w /work,-v airties-cargo:/opt/cargo/registry -w /work,$(DOCKER_RUN))
+# Rust programs (scripts/rust-build.sh): named volumes for the cargo registry and the target
+# directories, so build-std's crates and the objects survive between builds; the program's
+# repository mounted read-only at /src.
+MAISON_DIR ?= ../maison
+CLAPIER_DIR ?= ../clapier
+DOCKER_RUN_RUST = $(subst -w /work,-v airties-cargo:/opt/cargo/registry -v airties-cargo-target:/cargo-target -w /work,$(DOCKER_RUN))
 
 # DVB userland (a kernel built with DVB=1), one .c each in src/; copied to /dev/shm by hand,
 # not part of the image
 TOOLS     := dvbzap tunerd
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
-.PHONY: help all builder kernel busybox mtdutils tools wpa kird rootfs ubi flash-all \
+.PHONY: help all builder kernel busybox mtdutils tools maison clapier mosquitto nft cacert rootfs ubi flash-all \
         e2fsprogs openssh smartctl \
         tftp cfe-help flash-rootfs flash-kernel check-overlay outdated connect \
         clean kernel-clean distclean
@@ -97,30 +106,33 @@ $(STAMP)/busybox-$(BUSYBOX_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/busybox-*.version; touch $@
 $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/mtdutils-*.version; touch $@
-$(STAMP)/wpa-$(WPA_VERSION)-$(LIBNL_VERSION).version:
-	@mkdir -p $(STAMP); rm -f $(STAMP)/wpa-*.version; touch $@
 $(STAMP)/e2fsprogs-$(E2FSPROGS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/e2fsprogs-*.version; touch $@
 $(STAMP)/openssh-$(OPENSSH_VERSION)-$(ZLIB_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/openssh-*.version; touch $@
 $(STAMP)/smartmontools-$(SMARTMONTOOLS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/smartmontools-*.version; touch $@
+$(STAMP)/mosquitto-$(MOSQUITTO_VERSION)-$(OPENSSL_VERSION)-$(CJSON_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/mosquitto-*.version; touch $@
+$(STAMP)/nft-$(NFTABLES_VERSION)-$(LIBNFTNL_VERSION)-$(LIBMNL_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/nft-*.version; touch $@
 
 $(OUT)/busybox: scripts/bb-build.sh $(STAMP)/builder.stamp $(STAMP)/busybox-$(BUSYBOX_VERSION).version
 	$(DOCKER_RUN) env BUSYBOX_VERSION=$(BUSYBOX_VERSION) bash scripts/bb-build.sh
 
 busybox: $(OUT)/busybox ## Build static BusyBox $(BUSYBOX_VERSION)
 
-$(OUT)/wpa_supplicant: scripts/wpa-build.sh $(STAMP)/builder.stamp $(STAMP)/wpa-$(WPA_VERSION)-$(LIBNL_VERSION).version
-	$(DOCKER_RUN) env WPA_VERSION=$(WPA_VERSION) LIBNL_VERSION=$(LIBNL_VERSION) \
-		bash scripts/wpa-build.sh
+# Maison's backend, from its own repository (cargo decides what to rebuild: always run)
+maison: $(STAMP)/builder.stamp ## Build maison-backend from $(MAISON_DIR) (static Rust, MIPS32 R1)
+	@test -f "$(MAISON_DIR)/backend/Cargo.toml" || { echo "!! no maison checkout at $(MAISON_DIR)"; exit 1; }
+	$(subst -w /work,-v "$(abspath $(MAISON_DIR))":/src:ro -w /work,$(DOCKER_RUN_RUST)) \
+		env OPENSSL_VERSION=$(OPENSSL_VERSION) bash scripts/rust-build.sh /src/backend maison-backend --no-default-features
 
-wpa: $(OUT)/wpa_supplicant ## Build static wpa_supplicant $(WPA_VERSION) (nl80211, internal TLS)
-
-$(OUT)/kird: scripts/kird-build.sh kird/Cargo.toml kird/src/main.rs $(STAMP)/builder.stamp
-	$(DOCKER_RUN_KIRD) bash scripts/kird-build.sh
-
-kird: $(OUT)/kird ## Build the kird IR->maison daemon (static Rust, MIPS32 R1)
+# clapier, the Nabaztag's server (Maison role), from its own repository
+clapier: $(STAMP)/builder.stamp ## Build clapier and garenne-ctl from $(CLAPIER_DIR) (static Rust, MIPS32 R1)
+	@test -f "$(CLAPIER_DIR)/crates/clapier/Cargo.toml" || { echo "!! no clapier checkout at $(CLAPIER_DIR)"; exit 1; }
+	$(subst -w /work,-v "$(abspath $(CLAPIER_DIR))":/src:ro -w /work,$(DOCKER_RUN_RUST)) \
+		env OPENSSL_VERSION=$(OPENSSL_VERSION) bash scripts/rust-build.sh /src clapier,garenne-ctl -p clapier
 
 $(OUT)/mke2fs: scripts/e2fsprogs-build.sh $(STAMP)/builder.stamp $(STAMP)/e2fsprogs-$(E2FSPROGS_VERSION).version
 	$(DOCKER_RUN) env E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) bash scripts/e2fsprogs-build.sh
@@ -136,6 +148,23 @@ $(OUT)/smartctl: scripts/smartmontools-build.sh $(STAMP)/builder.stamp $(STAMP)/
 	$(DOCKER_RUN) env SMARTMONTOOLS_VERSION=$(SMARTMONTOOLS_VERSION) bash scripts/smartmontools-build.sh
 
 smartctl: $(OUT)/smartctl ## Build static smartctl $(SMARTMONTOOLS_VERSION)
+
+$(OUT)/mosquitto: scripts/mosquitto-build.sh scripts/lib.sh $(STAMP)/builder.stamp $(STAMP)/mosquitto-$(MOSQUITTO_VERSION)-$(OPENSSL_VERSION)-$(CJSON_VERSION).version
+	$(DOCKER_RUN) env MOSQUITTO_VERSION=$(MOSQUITTO_VERSION) OPENSSL_VERSION=$(OPENSSL_VERSION) \
+		CJSON_VERSION=$(CJSON_VERSION) bash scripts/mosquitto-build.sh
+
+mosquitto: $(OUT)/mosquitto ## Build the static Mosquitto $(MOSQUITTO_VERSION) broker (OpenSSL $(OPENSSL_VERSION))
+
+$(OUT)/nft: scripts/nft-build.sh scripts/lib.sh $(STAMP)/builder.stamp $(STAMP)/nft-$(NFTABLES_VERSION)-$(LIBNFTNL_VERSION)-$(LIBMNL_VERSION).version
+	$(DOCKER_RUN) env NFTABLES_VERSION=$(NFTABLES_VERSION) LIBNFTNL_VERSION=$(LIBNFTNL_VERSION) \
+		LIBMNL_VERSION=$(LIBMNL_VERSION) bash scripts/nft-build.sh
+
+nft: $(OUT)/nft ## Build the static nft $(NFTABLES_VERSION) (the IPv6 guard, the Maison role's broker firewall)
+
+$(OUT)/cacert.pem: scripts/cacert-fetch.sh $(STAMP)/builder.stamp
+	$(DOCKER_RUN) env CACERT_DATE=$(CACERT_DATE) bash scripts/cacert-fetch.sh
+
+cacert: $(OUT)/cacert.pem ## Fetch the CA bundle of $(CACERT_DATE) (curl.se, its SHA-256 checked)
 
 # (stamp file: macOS make 3.81 has no grouped targets for the two binaries)
 $(OUT)/.mtdutils.stamp: scripts/mtdutils-build.sh $(STAMP)/builder.stamp $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version
@@ -154,7 +183,7 @@ $(TOOL_BINS): $(OUT)/%: src/%.c $(STAMP)/builder.stamp
 tools: $(TOOL_BINS) ## Build the DVB userland tools ($(TOOLS)), copied to /dev/shm by hand
 
 # RootFS
-rootfs: $(OUT)/busybox $(OUT)/sshd $(OUT)/wpa_supplicant $(OUT)/kird $(OUT)/flash_erase ## Assemble rootfs/ + binaries into new_rootfs/
+rootfs: $(OUT)/busybox $(OUT)/sshd $(OUT)/flash_erase $(OUT)/mosquitto $(OUT)/nft $(OUT)/cacert.pem ## Assemble rootfs/ + binaries into new_rootfs/
 	BASEDIR="$(CURDIR)" OUTDIR="$(CURDIR)/$(OUT)" NEWROOT="$(CURDIR)/new_rootfs" \
 		bash scripts/mkrootfs.sh
 
@@ -257,7 +286,7 @@ check-overlay: ## List the files the box's /config overlays hold, flagging those
 
 outdated: ## Compare every pinned version with the latest upstream release (network, read-only)
 	@KERNEL_VERSION=$(KERNEL_VERSION) BUSYBOX_VERSION=$(BUSYBOX_VERSION) MTDUTILS_VERSION=$(MTDUTILS_VERSION) \
-	 WPA_VERSION=$(WPA_VERSION) LIBNL_VERSION=$(LIBNL_VERSION) E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
+	 E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
 	 OPENSSH_VERSION=$(OPENSSH_VERSION) ZLIB_VERSION=$(ZLIB_VERSION) SMARTMONTOOLS_VERSION=$(SMARTMONTOOLS_VERSION) \
 	 bash scripts/outdated.sh
 

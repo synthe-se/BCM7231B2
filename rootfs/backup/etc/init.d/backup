@@ -44,8 +44,9 @@ if [ ! -e /var/run/syslog-on-disk ]; then
     killall syslogd 2>/dev/null
 fi
 
-# Chroots: every component root-owned and not group/world-writable
-chown root:root "$D"; chmod 755 "$D"
+# Chroots: every component root-owned and not group/world-writable. The top 0711: crossed, never
+# listed (the Maison role's users see neither the servers' names nor their reports)
+chown root:root "$D"; chmod 711 "$D"
 read -r hosts < /etc/ssh/backup_hosts   # one line, space-separated (mkrootfs.sh)
 for h in $hosts; do
     mkdir -p "$D/vykar-$h/repo"
@@ -53,6 +54,30 @@ for h in $hosts; do
     chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
 done
 touch /var/run/backup-ready   # sshd-backup-run opens port 2222
+
+# The Maison role's photos (its wall frame's): a file system of their own, a fixed-size ext4 image
+# on this disk, mounted on /srv/maison without devices, setuid nor exec. The service maison can
+# neither fill the backups' disk nor reach it; without the disk, /srv/maison stays the read-only
+# rootfs's empty directory and only the photos fail.
+if [ -x /usr/sbin/maison-run ] && ! mountpoint -q /srv/maison; then
+    M="$D/maison"; IMG="$M/photos.ext4"
+    mkdir -p "$M"; chmod 700 "$M"
+    if [ ! -f "$IMG" ]; then
+        # sparse: the disk gives it blocks as photos come
+        dd if=/dev/zero of="$IMG" bs=1M count=0 seek=1024 2>/dev/null \
+            && mke2fs -q -t ext4 -L maison-photos -m 0 "$IMG" \
+            && logger -t backup "Maison's photos: a 1 GiB file system made"
+    fi
+    e2fsck -p "$IMG" > /tmp/fsck-photos.log 2>&1; rc=$?
+    logger -t backup < /tmp/fsck-photos.log
+    if [ "$rc" -lt 4 ] && mount -t ext4 -o loop,nodev,nosuid,noexec,noatime "$IMG" /srv/maison; then
+        mkdir -p /srv/maison/photos
+        chown root:root /srv/maison; chmod 755 /srv/maison
+        chown maison:maison /srv/maison/photos; chmod 700 /srv/maison/photos
+    else
+        logger -t backup "Maison's photos ($IMG, e2fsck $rc) not mounted"
+    fi
+fi
 
 # A write that never returns stops its beats, and wdt-pet the watchdog (one beater)
 W=/var/run/disk-beat.pid

@@ -1,0 +1,24 @@
+#!/bin/sh
+# maison-status: the Maison role at a glance (Maison's deploy.sh status)
+# shellcheck source=/dev/null  # written at image build
+. /etc/firmware-release
+printf 'Firmware: %s\n\nStorage:\n' "$FIRMWARE"
+for m in /opt /srv/maison; do
+    if mountpoint -q "$m"; then printf '  %s: mounted\n' "$m"; else printf '  %s: not mounted\n' "$m"; fi
+done
+printf '\nServices:\n'
+[ -e /opt/maison/stopped ] && echo "  stopped by deploy.sh stop"
+port=$(grep -E '^PORT=' /opt/maison/.env 2>/dev/null | tail -n1 | cut -d= -f2-)
+if wget -q -O - "http://127.0.0.1:${port:-3033}/health" >/dev/null 2>&1; then
+    echo "  maison: healthy"
+else
+    echo "  maison: not answering"
+fi
+for p in mosquitto clapier; do
+    if pidof "$p" >/dev/null; then echo "  $p: running"; else echo "  $p: not running"; fi
+done
+if nft list table inet maison_mqtt >/dev/null 2>&1; then
+    echo "  plugs' firewall: loaded"
+else
+    echo "  plugs' firewall: missing"
+fi

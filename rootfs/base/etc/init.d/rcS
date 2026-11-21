@@ -26,7 +26,7 @@ chmod 755 /var/empty
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /var/run/resolv.conf
 
 # Boot guard: rcS must reach its end within 3 minutes, whatever holds it. On 2026-10-25 a boot
-# stopped after eth0 (the disk had not answered): no WiFi, no sshd, nothing to reboot it, until a
+# stopped after eth0 (the disk had not answered): no network, no sshd, nothing to reboot it, until a
 # power cycle. The watchdog cannot see that: its daemon pets from its own process.
 ( sleep 180; [ -e /var/run/rcS.done ] || { step "stuck for 180 s, rebooting"; reboot -f; } ) \
     </dev/null >/dev/null 2>&1 &
@@ -44,18 +44,21 @@ step "watchdog armed"
 # reflashes. UBI handles the NAND's bad blocks and power cuts (JFFS2 logged "Empty flash" and data
 # CRC errors after each one), and UBIFS gives overlayfs tmpfile and RENAME_WHITEOUT. A mtd2 that
 # is not UBI yet (blank, or the vendor's ConfigFS: backup/mtd2_backup.bin) is formatted, once.
-step config
-mkdir -p /config
-if [ "$(head -c 4 /dev/mtd2)" != "UBI#" ]; then
-    echo "[init] /config: formatting mtd2 for UBI (once)..."
-    ubiformat /dev/mtd2 -y -q
-fi
+# ubi_mount <mtd> <ubi device> <volume> <mount point>: a partition reached through UBI, one
+# UBIFS volume the size of it. Formatted once when it is not UBI yet (blank, or the vendor's).
 # -b 6: keep 6 PEBs for bad blocks. UBI's default reserves 20 per 1024 PEBs of the whole chip, for
 # each device: 20 of mtd2's 48, which left /config 916 KB.
-if [ "$(head -c 4 /dev/mtd2)" = "UBI#" ] && ubiattach -m 2 -d 1 -b 6 >/dev/null; then
-    [ -e /dev/ubi1_0 ] || ubimkvol /dev/ubi1 -N config -m >/dev/null
-    mount -t ubifs ubi1:config /config
-fi
+ubi_mount() {
+    if [ "$(head -c 4 "/dev/mtd$1")" != "UBI#" ]; then
+        echo "[init] $4: formatting mtd$1 for UBI (once)..."
+        ubiformat "/dev/mtd$1" -y -q
+    fi
+    [ "$(head -c 4 "/dev/mtd$1")" = "UBI#" ] && ubiattach -m "$1" -d "$2" -b 6 >/dev/null || return 1
+    [ -e "/dev/ubi$2_0" ] || ubimkvol "/dev/ubi$2" -N "$3" -m >/dev/null
+    mkdir -p "$4" && mount -t ubifs "ubi$2:$3" "$4"
+}
+step config
+ubi_mount 2 1 config /config
 # Once, after that reserve shrank: UBIFS fixed its size when made, so the volume is remade at the
 # full size and the files put back (kept in RAM meanwhile)
 if grep -q ' /config ' /proc/mounts && [ "$(cat /sys/class/ubi/ubi1/avail_eraseblocks)" -gt 0 ]; then
@@ -66,6 +69,11 @@ if grep -q ' /config ' /proc/mounts && [ "$(cat /sys/class/ubi/ubi1/avail_eraseb
     rm -f /dev/shm/config.tar
 fi
 grep -q ' /config ' /proc/mounts || echo "[init] WARNING: /config unavailable, running volatile"
+
+# /opt: Maison's own (its backend, web app and state, clapier's data), UBIFS on mtd6 (28 MB, the
+# vendor's recovery once, erased). Nothing there, or not mounted: the role's services wait.
+step opt
+ubi_mount 6 2 opt /opt || echo "[init] WARNING: /opt unavailable: Maison's services wait"
 
 # A rootfs update (make flash-rootfs) writes the new image to the volume "rootfs_new", swaps the
 # names atomically and reboots: the previous one, now "rootfs_old", goes once this one booted
@@ -84,6 +92,15 @@ fi
 hostname AirTies
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
+# mdev: device nodes as they come and go (/etc/mdev.conf: the Zigbee dongle for the group dialout),
+# those of the boot first, then a daemon on the kernel's events, kept up by supervise
+step mdev
+mdev -s
+/usr/sbin/supervise mdev -df </dev/null >/dev/null 2>&1 &
+
+# Ports from 80 up for every user: clapier (the Nabaztag's server, user clapier) serves 80
+echo 80 > /proc/sys/net/ipv4/ip_unprivileged_port_start
+
 # zram swap (64 MB, LZ4): a cushion for memory spikes, no flash wear
 if [ -e /sys/block/zram0 ]; then
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null
@@ -91,19 +108,23 @@ if [ -e /sys/block/zram0 ]; then
         && echo "[init] zram swap: 64 MB"
 fi
 
-# eth0 is the recovery path (direct cable, 192.168.2.1). DHCP only with a cable in: without one,
-# udhcpc held the boot for its whole timeout. The PHY is polled (the MAC gives no link IRQ), so the
-# carrier shows a few seconds after the link comes up.
+# eth0 is the box's only link. The PHY is polled (the MAC gives no link IRQ), so the carrier shows
+# a few seconds after the link comes up. udhcpc keeps its lease (renewals) for as long as the box
+# runs: it waits 6 s for a first one, then goes on asking in the background. Without one by then,
+# the recovery address 192.168.2.1 (direct cable, CFE's subnet) comes up as an alias, which a
+# lease later does not touch.
 step eth0
 ifconfig eth0 up 2>/dev/null
 n=0
 while [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" != 1 ] && [ "$n" -lt 8 ]; do
     usleep 500000; n=$((n + 1))
 done
-if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]; then
-    udhcpc -i eth0 -s /etc/network/udhcpc.script -n -q >/dev/null 2>&1
-fi
-ip -4 addr show eth0 2>/dev/null | grep -q inet || ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
+udhcpc -i eth0 -s /etc/network/udhcpc.script -p /var/run/udhcpc.eth0.pid -t 3 -T 2 -A 10 -b \
+    >/dev/null 2>&1
+ip -4 addr show eth0 2>/dev/null | grep -q inet || ifconfig eth0:0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
+# The guard (/etc/guard.nft): nothing new over IPv6 from beyond the LAN. Its global address comes
+# with the router's advertisements, from the moment eth0 is up.
+nft -f /etc/guard.nft || echo "<3>rcS: the IPv6 guard did not load" > /dev/kmsg
 
 # syslogd and klogd, kept up by supervise; the loggers below need the socket
 step syslog
@@ -112,13 +133,11 @@ step syslog
 n=0
 while [ ! -S /dev/log ] && [ "$n" -lt 20 ]; do usleep 100000; n=$((n + 1)); done
 
-# WiFi, kird and the backup target, after syslogd (they log through it). Backgrounded with fds
-# detached from the console: getty's vhangup() on ttyS0 would otherwise kill them once rcS ends
-# (wifi waits up to 10 s for USB enumeration, backup for the disk).
-step wifi
-/etc/init.d/wifi </dev/null >/dev/null 2>&1 &
-step kird
-/etc/init.d/kird </dev/null >/dev/null 2>&1
+# The link's watch and the backup target, after syslogd (they log through it). Detached from the
+# console: getty's vhangup() on ttyS0 would otherwise kill them once rcS ends (backup waits for
+# the disk).
+step link-watch
+start-stop-daemon -S -b -m -p /var/run/link-watch.pid -x /usr/sbin/link-watch </dev/null >/dev/null 2>&1
 if [ -x /etc/init.d/backup ]; then
     step backup
     # Hourly SMART report into every chroot, run by crond (inittab)
@@ -138,7 +157,7 @@ step sshd
 
 touch /var/run/rcS.done
 # From here on the watchdog is petted only while the box's loops still turn (wdt-pet): BusyBox's
-# daemon kept petting through a 6 h freeze on 2026-11-16 (logging stopped, wifi-watch stuck)
+# daemon kept petting through a 6 h freeze on 2026-11-16 (logging stopped, the link's watch stuck)
 step wdt-pet
 start-stop-daemon -S -b -x /usr/sbin/wdt-pet </dev/null >/dev/null 2>&1
 step "done"

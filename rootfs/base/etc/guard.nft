@@ -1,0 +1,20 @@
+# The box's own guard (rcS loads it once eth0 is up), stateless (no conntrack): the LAN's router
+# keeps IPv4 out by NAT, but every LAN host gets a global IPv6 address, which only the router's
+# firewall, if any, keeps from the internet. From beyond the LAN (anything but link-local and
+# unique-local addresses): no new TCP connection (a SYN without ACK; the replies to the box's own
+# connections pass) and no mDNS. The services' own rules (the Maison role's maison_mqtt) come in
+# tables of their own.
+table inet guard
+delete table inet guard
+table inet guard {
+	set lan6 {
+		type ipv6_addr
+		flags interval
+		elements = { fe80::/10, fc00::/7 }
+	}
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		ip6 saddr != @lan6 tcp flags & (syn | ack) == syn drop
+		ip6 saddr != @lan6 udp dport 5353 drop
+	}
+}

@@ -48,7 +48,8 @@ mkswap mktemp more mount mountpoint mv nc netstat nice nslookup ntpd passwd pgre
 poweroff printf ps pwd readlink realpath reboot renice reset resize rm rmdir route sed seq
 sha256sum sleep sort split start-stop-daemon stat strings stty su swapoff swapon sync sysctl
 syslogd tac tail tar tee test time top touch tr traceroute true tty udhcpc umount uname uniq
-uptime usleep vi watch watchdog wc wget which who whoami xargs yes crond crontab"
+uptime usleep vi watch watchdog wc wget which who whoami xargs yes crond crontab chpst mdev
+setpriv"
 for a in $APPLETS; do ln -sf busybox "$NEWROOT/bin/$a"; done
 for a in init getty halt poweroff reboot; do ln -sf ../bin/busybox "$NEWROOT/sbin/$a"; done
 ln -sf ../../bin/busybox "$NEWROOT/usr/sbin/crond"
@@ -67,21 +68,8 @@ grep -E '^(ssh-ed25519|sk-ssh-ed25519@openssh.com) ' "$BASEDIR/device/authorized
 chmod 600 "$NEWROOT/root/.ssh/authorized_keys"
 info "  root keys: $(wc -l < "$NEWROOT/root/.ssh/authorized_keys") ed25519"
 
-# WiFi (Netgear A6150, rtw88): credentials from device/wpa_supplicant.conf (gitignored), baked
-# into /etc; the /config overlay keeps on-box edits
-for t in wpa_supplicant wpa_cli wpa_passphrase; do install_bin "$OUTDIR/$t" "usr/sbin/$t" || true; done
-if [ -f "$BASEDIR/device/wpa_supplicant.conf" ]; then
-    cp "$BASEDIR/device/wpa_supplicant.conf" "$NEWROOT/etc/wpa_supplicant.conf"
-    chmod 600 "$NEWROOT/etc/wpa_supplicant.conf"
-else
-    warn "No device/wpa_supplicant.conf: WiFi stays down (see device/wpa_supplicant.conf.example)"
-fi
-
-# kird (Ruwido remote -> maison): installed, started only when /etc/kird.conf sets KIRD_ENABLE=1
-install_bin "$OUTDIR/kird" usr/sbin/kird || true
-if [ -f "$BASEDIR/device/kird.conf" ]; then
-    cp "$BASEDIR/device/kird.conf" "$NEWROOT/etc/kird.conf"; chmod 600 "$NEWROOT/etc/kird.conf"
-fi
+# nftables: the box's IPv6 guard (/etc/guard.nft, rcS), and the Maison role's broker firewall
+install_bin "$OUTDIR/nft" usr/sbin/nft || err "nft not built (run: make nft)"
 
 # Flash tools: the box reflashes itself over SSH (make flash-rootfs); the UBI ones for /config
 for t in flash_erase nandwrite ubiformat ubiattach ubimkvol ubiupdatevol ubirename ubirmvol; do
@@ -112,6 +100,22 @@ if ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; then
     # Port 2222: its own sshd, opened once the disk and the chroots are up
     echo "::respawn:/usr/sbin/sshd-backup-run" >> "$NEWROOT/etc/inittab"
 fi
+
+# Maison role: the house's dashboard on this box. Its services (inittab) wait until Maison's
+# deploy.sh has put the backend under /opt/maison (mtd6, rcS) and clapier's data under
+# /opt/clapier; nothing of the house's is in the image. Mosquitto (the Meross plugs' broker) and
+# its firewall (nft, in the base), clapier (the Nabaztag's server), the CA bundle (the backend's TLS).
+# /srv/maison: the photos' file system (a fixed-size image on the backup disk, mounted by the
+# backup script); while it is not mounted, the read-only rootfs's empty directory.
+info "Maison role"
+copy_tree "$BASEDIR/rootfs/maison"
+install_bin "$OUTDIR/mosquitto" usr/sbin/mosquitto || err "mosquitto not built (run: make mosquitto)"
+install_bin "$OUTDIR/clapier" usr/sbin/clapier || warn "  the Nabaztag stays without its server (make clapier)"
+install_bin "$OUTDIR/garenne-ctl" usr/sbin/garenne-ctl || true
+mkdir -p "$NEWROOT/etc/ssl/certs" "$NEWROOT/etc/mosquitto" "$NEWROOT/opt" "$NEWROOT/srv/maison"
+cp "$OUTDIR/cacert.pem" "$NEWROOT/etc/ssl/certs/ca-certificates.crt" 2>/dev/null \
+    || err "no CA bundle (run: make cacert)"
+for s in maison-run mosquitto-run clapier-run; do echo "::respawn:/usr/sbin/$s" >> "$NEWROOT/etc/inittab"; done
 
 # sshd_config: root (port 22, key only) + the backup accounts (port 2222, SFTP only, chrooted),
 # each confined to its port
@@ -165,12 +169,19 @@ root:x:0:0:root:/root:/bin/ash
 daemon:x:1:1:daemon:/usr/sbin:/bin/false
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/empty:/bin/false
+maison:x:700:700:Maison:/opt/maison:/bin/false
+mosquitto:x:701:701:Mosquitto:/var/empty:/bin/false
+clapier:x:702:702:clapier:/opt/clapier:/bin/false
 EOF
 cat > "$NEWROOT/etc/group" << 'EOF'
 root:x:0:root
 daemon:x:1:
+dialout:x:20:maison
 nogroup:x:65534:
 sshd:x:22:
+maison:x:700:
+mosquitto:x:701:
+clapier:x:702:
 EOF
 
 # root password: random, generated on the first build into device/root-password (gitignored,
@@ -190,6 +201,9 @@ root:${ROOTPW_HASH}:0:0:99999:7:::
 daemon:x:1:1:daemon:/usr/sbin:/bin/false
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/empty:/bin/false
+maison:!:0:0:99999:7:::
+mosquitto:!:0:0:99999:7:::
+clapier:!:0:0:99999:7:::
 SHADOW
 chmod 640 "$NEWROOT/etc/shadow"
 

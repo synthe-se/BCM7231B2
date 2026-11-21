@@ -1,0 +1,49 @@
+#!/bin/sh
+# Mosquitto for the Meross plugs, whose firmware wants a broker to boot (TLS on 8883, anonymous).
+# The kernel lets only the plugs reach 8883: the nftables table maison_mqtt, rebuilt here from
+# the plugs' addresses (/opt/maison/deploy/mosquitto/plugs.allow, one IPv4 address a line,
+# written by Maison's deploy.sh from meross-devices.json) before the broker starts, every time.
+# No list, or a ruleset that does not load: no broker, never one listening unguarded.
+# Its configuration is Maison's (deploy/mosquitto/maison.conf as /etc/mosquitto/maison.conf, the
+# certificates under /etc/mosquitto/certs/maison: the persistent /etc overlay), put there by
+# Maison's deploy.sh, which also stops it (/opt/maison/stopped). Kept up by init (inittab respawn).
+ALLOW=/opt/maison/deploy/mosquitto/plugs.allow
+CONF=/etc/mosquitto/maison.conf
+if [ ! -f "$ALLOW" ] || [ ! -f "$CONF" ] || [ -e /opt/maison/stopped ]; then
+    sleep 60
+    exit 0
+fi
+plugs=
+while read -r address; do
+    [ -n "$address" ] || continue
+    case "$address" in
+        *[!0-9.]*) logger -t mosquitto "$ALLOW: « $address » is not an IPv4 address"; sleep 60; exit 1 ;;
+    esac
+    plugs="${plugs:+$plugs, }$address"
+done < "$ALLOW"
+if ! nft -f - <<NFT
+table inet maison_mqtt
+delete table inet maison_mqtt
+table inet maison_mqtt {
+	set plugs {
+		type ipv4_addr
+		${plugs:+elements = { $plugs }}
+	}
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 8883 iif "lo" accept
+		tcp dport 8883 ip saddr @plugs accept
+		tcp dport 8883 drop
+	}
+}
+NFT
+then
+    logger -t mosquitto "the plugs' firewall did not load: no broker"
+    sleep 60
+    exit 1
+fi
+mkdir -p /var/log/mosquitto && chown mosquitto:mosquitto /var/log/mosquitto
+# It starts as root (its certificates), then drops to the user mosquitto by itself; killed before
+# sshd and the backups when memory runs out
+echo 600 > /proc/self/oom_score_adj
+mosquitto -c "$CONF" 2>&1 | logger -t mosquitto

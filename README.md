@@ -2,9 +2,10 @@
 
 Modern custom Linux for the AirTies AIR 7310T set-top box (Broadcom BCM7231B2),
 replacing the stock Wyplay firmware. Mainline kernel, fully static userland,
-Makefile-driven build, SSH-based iteration. Its job today: an off-site **backup
+Makefile-driven build, SSH-based iteration. Its jobs: an off-site **backup
 target**, a SATA disk and chrooted SFTP accounts reached through a subnet route
-on a tailnet node of the LAN (see [Backup target](#backup-target)).
+on a tailnet node of the LAN (see [Backup target](#backup-target)), and the
+house's **[Maison](https://github.com/synthe-se/maison)** server (see [Maison role](#maison-role)).
 
 ## Current stack
 
@@ -12,12 +13,11 @@ No distribution: the kernel, BusyBox and a handful of static daemons, built from
 
 | Component | Version |
 |-----------|---------|
-| Kernel | Linux 7.3.x mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~4 MB; the raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
+| Kernel | Linux 7.3.x mainline, flashed as self-decompressing `vmlinuz` (ZBOOT; the raw vmlinux outgrew the 7 MB mtd4 when a WiFi stack was in) |
 | Init, shell, tools | BusyBox 1.38.x (static, ash; `init` supervises sshd, crond and ntpd) |
 | SSH | OpenSSH 10.x, built without OpenSSL (Ed25519 keys only; ChaCha20-Poly1305, post-quantum mlkem/sntrup KEX), seccomp pre-auth sandbox. Port 22: root, key only. Port 2222: the chrooted SFTP-only backup accounts |
 | Disk tools | e2fsprogs 1.47.x (`mke2fs`, `e2fsck`, `tune2fs`), smartmontools 7.x (`smartctl`) |
-| WiFi | wpa_supplicant (static, nl80211 + internal TLS: WPA2-PSK) |
-| IR bridge | `kird` (static Rust, edition 2024): forwards Ruwido remote key events to maison's `/api/ir/key`. Installed, off by default |
+| Rust | `scripts/rust-build.sh`: static MIPS32 R1 programs (nightly build-std, a custom target spec); `make maison` builds maison's backend from `MAISON_DIR` (default `../maison`) |
 | Flash tools | mtd-utils on the box (it reflashes itself) |
 
 All binaries are **statically linked** (musl, MIPS32 R1): the rootfs has no
@@ -27,7 +27,6 @@ shared libraries. Versions are pinned in the `Makefile`.
 
 | Component | Detail |
 |-----------|--------|
-| **WiFi** | Netgear A6150 USB dongle (RTL8812BU), mainline rtw88_8822bu, firmware baked into the kernel |
 | **SoC** | Broadcom BCM7231B2, dual-core BMIPS4380 @ 594 MHz |
 | **ISA** | MIPS32 Release 1 ONLY (R2 binaries crash with "Illegal instruction") |
 | **RAM** | 2×256 MB (~500 MB usable) |
@@ -50,7 +49,7 @@ ConfigFS    0x00300000   6 MB    mtd2   UBI: UBIFS /config (persistent overlays)
 Reserve     0x00900000   10 MB   mtd3   Vendor data, left as is
 Kernel      0x01300000   7 MB    mtd4   vmlinuz (self-decompressing ELF, max 7 MB)
 RootFS      0x01a00000   70 MB   mtd5   UBI: UBIFS rootfs (volume "rootfs")
-Recovery    0x06000000   28 MB   mtd6   Erased (held the vendor's recovery image)
+Recovery    0x06000000   28 MB   mtd6   UBI: UBIFS /opt (Maison role; held the vendor's recovery)
 ```
 
 ## Build
@@ -65,27 +64,27 @@ make all            # kernel + rootfs UBI image: everything flashable
 make kernel         # -> build_output/vmlinuz        (incremental)
 make rootfs         # -> new_rootfs/                 (rootfs/ tree + binaries)
 make ubi            # -> rootfs.ubifs, rootfs.ubi    (UBIFS rootfs; whole-mtd5 UBI image for CFE)
-make busybox openssh wpa kird mtdutils   # individual pieces
+make busybox openssh mtdutils           # individual pieces
 make e2fsprogs smartctl                  # backup target pieces
 make tools                               # DVB userland (dvbzap, tunerd; DVB=1 kernel), not in the image
+make maison                              # maison-backend from $(MAISON_DIR) -> build_output/
 
-make kernel KERNEL_VERSION=7.2.15   # build another kernel version
+make kernel KERNEL_VERSION=7.3.1    # build another kernel version
 make kernel DVB=1                   # with the DVB-T adapter driver
-make kernel WIFI_DEBUG=1            # with debugfs and rtw88/mac80211 diagnostics
 make kernel-clean                   # drop persistent kernel trees
 ```
 
 ### The rootfs
 
 `rootfs/base/` holds the image's own files as they land on the box: init
-scripts (`etc/init.d/rcS`, `rcK`, `wifi`, `kird`), `inittab`, the WiFi
-watcher, the status banner, the NTP hooks, the DHCP script. `rootfs/backup/`
+scripts (`etc/init.d/rcS`, `rcK`), `inittab`, the link's watch
+(`link-watch`), the watchdog's petter (`wdt-pet`), the status banner, the NTP hooks, the DHCP script. `rootfs/backup/`
 is added with the backup role (`etc/init.d/backup`, `usr/sbin/disk-health`).
 `scripts/mkrootfs.sh` copies both, then adds what depends on the build:
 binaries, BusyBox links, accounts, `sshd_config`, keys, firmware version.
 
 Boot: `rcS` mounts, brings up `/config` and its overlays, the network,
-syslog, WiFi and the backup disk; `init` then starts sshd, ntpd and crond
+syslog, the link's watch and the backup disk; `init` then starts sshd, ntpd and crond
 from `inittab` and restarts them if they exit. syslogd and klogd are needed
 before `rcS` ends, when `init` starts nothing yet: `/usr/sbin/supervise`
 keeps them up instead. Files rewritten at run time
@@ -96,11 +95,6 @@ never in flash.
 
 Personal files under `device/` (all gitignored, `.example` templates committed):
 
-- `device/wpa_supplicant.conf`: WiFi credentials (`wlan0` comes up at boot
-  when the A6150 dongle and this file are present; on-box edits persist via
-  the `/config` overlay)
-- `device/kird.conf`: maison URL + `IR_API_TOKEN` machine token for the IR
-  bridge, and `KIRD_ENABLE` (off unless `1`)
 - `device/authorized_keys`: root's SSH keys (see below)
 - `device/root-password`: root's password, generated on the first rootfs
   build (24 random characters, 0600); only its SHA-512 hash goes into the
@@ -108,20 +102,6 @@ Personal files under `device/` (all gitignored, `.example` templates committed):
 - `device/vykar/<host>.pub`: one public key per server backing up to the box;
   each gets the account `vykar-<host>` (see [Backup target](#backup-target)).
   No key, no backup role: the image stays a plain STB.
-
-### kird: remote control bridge
-
-The KIR driver decodes the Ruwido remote in hardware and delivers keycodes on
-`/dev/input/event0`; `kird` (kird/, static Rust built via nightly build-std
-against a custom MIPS32 R1 target spec, see scripts/kird-build.sh) POSTs
-every key event to maison, which maps keys to actions (frontend
-configurator, `/remote`). Unmapped keys land in maison's log and its
-`/api/ir/recent`, which is how new buttons are discovered. The key codes:
-[docs/remote-keys.md](docs/remote-keys.md).
-
-Off by default. To turn it on: set `KIRD_ENABLE=1` in `/etc/kird.conf` on
-the box (or in `device/kird.conf` before a build), then run
-`/etc/init.d/kird`; it starts at every boot from then on.
 
 ### SSH access
 
@@ -153,7 +133,7 @@ make kernel flash-kernel      # rebuild kernel -> flash mtd4 via SSH -> reboot
 make all flash-all            # both, one reboot
 make check-overlay            # what the /config overlays hide of the image
 make outdated                 # every pinned version against the latest upstream release
-make flash-all DEVICE=192.168.2.1          # over the recovery cable instead of WiFi
+make flash-all DEVICE=192.168.2.1          # over the recovery cable
 ```
 
 The NAND is reached through UBI only (bad blocks, wear levelling, power cuts):
@@ -196,10 +176,57 @@ CFE> boot nandflash0.kernel:
 Original firmware backups live in `backup/` (`mtd4_backup.bin`,
 `mtd5_backup.bin`); flash them the same way to restore stock.
 
+## IPv6 guard
+
+The kernel speaks IPv6 (Matter needs it), so the box takes a global address from the router's
+advertisements, which only the router's own firewall keeps from the internet. `rcS` loads
+`/etc/guard.nft` as soon as eth0 is up: from beyond the LAN (anything but `fe80::/10` and
+`fc00::/7`), no new TCP connection and no mDNS. Stateless (no conntrack): a SYN without ACK is
+dropped, the replies to the box's own connections pass.
+
+## Maison role
+
+The box serves [Maison](https://github.com/synthe-se/maison), the house's dashboard. The image
+carries everything but Maison itself and the house's settings:
+
+- **/opt** (UBIFS on mtd6, formatted once by `rcS`): Maison's backend, web app and state,
+  pushed by Maison's `DEPLOY_TARGET=box ./deploy.sh` (same layout as on any host,
+  `/opt/maison`), clapier's data (`/opt/clapier`: `overlay/`, `garenne.bin`, `clapier.conf`
+  with its arguments for this house). Nothing of the house's is in the image.
+- **Services**, from `inittab` (init restarts them), each waiting until its files exist:
+  `maison-run` (user `maison`, group `dialout` for the Zigbee dongle), `mosquitto-run` (the
+  Meross plugs' TLS broker: an nftables table lets only the plugs' addresses, Maison's
+  `plugs.allow`, reach 8883, rebuilt before each start; no table, no broker), `clapier-run`
+  (the Nabaztag's server, user `clapier`, port 80: `ip_unprivileged_port_start` is 80).
+- **Kept apart from the backups**: Maison serves more clients than anything else here, so it
+  runs with `no_new_privs`, 256 MB at most, and goes first when memory runs out. Its
+  photos are a fixed-size ext4 image on the backup disk, mounted on `/srv/maison` without
+  devices, setuid nor exec by the backup script: it can neither fill that disk nor read it
+  (`/srv/backup` is 0711, every repository 0700 to its account). Without the disk, only the
+  photos fail.
+- `mdev` gives serial adapters to `dialout`; the CA bundle (curl.se's, `CACERT_DATE`) is
+  `/etc/ssl/certs/ca-certificates.crt`.
+- `maison-status` and `maison-logs [stack|backend|mosquitto|clapier]` (Maison's
+  `deploy.sh status` and `logs` call them).
+
+```bash
+make maison MAISON_DIR=../maison   # the backend (deploy.sh build runs it)
+make clapier CLAPIER_DIR=../clapier
+make mosquitto nft cacert          # in the image (make rootfs needs them)
+```
+
+Rust programs go through `scripts/rust-build.sh`: nightly `build-std` against a MIPS32 R1
+target spec, 64-bit atomics from the toolchain's `libatomic.a`, OpenSSL built here
+(`OPENSSL_VERSION`, mosquitto's too), sized for the NAND (`opt-level=s`, fat LTO, stripped).
+Each binary is refused if dynamic or if it holds one MIPS32 R2 instruction.
+
 ## Device network
 
-`wlan0` takes DHCP. `eth0` is the recovery path: DHCP when a cable is in at
-boot, else the fixed `192.168.2.1`. SSH on port 22 (admin), backup SFTP on
+`eth0` is the only link: DHCP, its lease kept and renewed by `udhcpc` for as long as the box
+runs. Without a lease 6 s into the boot, the recovery address `192.168.2.1` (a direct cable,
+CFE's subnet) comes up as the alias `eth0:0`. `link-watch` pings the gateway every minute: 3
+minutes without an answer bring the link down and up and ask for a lease again, 8 reboot cleanly
+(no lease, no gateway: nothing to restart, `udhcpc` keeps asking). SSH on port 22 (admin), backup SFTP on
 port 2222 (backup role only; a second sshd that opens it once the backup
 disk is mounted and the chroots exist, so port 22 never waits for the
 disk). Nothing else listens.
@@ -235,8 +262,6 @@ status of each and what is left to check before sending any (none is sent):
 - **bcm7xxx**: the BCM7231 internal 40nm EPHY (PHY ID 0x600d8690)
 - **bcmgenet**: no EEE register access on GENET v1/v2 (a fatal GISB bus error
   at link-up); the PHY polled on v2 (local: no link interrupt reached the MAC)
-- **rtw88 USB**: RX URBs resubmitted after a transient bus error (each one was
-  lost for good until a reset)
 - **BMIPS**: ZBOOT (self-decompressing `vmlinuz`); the AIR 7310T board
 - **brcmstb_gisb**, **libahci**: two spurious boot messages
 - the KIR and DVB drivers hooked into the build (local)
@@ -271,17 +296,17 @@ only ever sees ciphertext). Pieces, mostly started by `/etc/init.d/backup`
   `/srv/backup/system/log/messages` (5 × 2 MB, `tail` it: `logread` has no
   buffer then), so a hang no longer takes the evidence with it. The backup
   script flags it and stops syslogd; `supervise` starts it again on the disk.
-- **WiFi watch** (any box with WiFi): `/usr/sbin/wifi-watch` pings the
-  gateway every minute; 3 minutes without an answer restart WiFi, 8 reboot
-  cleanly. The hardware watchdog only catches a hung kernel, not a dead link.
+- **Link watch**: `/usr/sbin/link-watch` pings the gateway every minute (see
+  [Device network](#device-network)). The hardware watchdog only catches a
+  hung kernel, not a dead link.
 - **Watchdog on health**: once `rcS` is done, `/usr/sbin/wdt-pet` takes
   `/dev/watchdog` from BusyBox's `watchdog` and pets it only while every
-  beat in `/var/run/beat/` is fresh: `wifi-watch` (each turn) and
+  beat in `/var/run/beat/` is fresh: `link-watch` (each turn) and
   `disk-beat` (a write + fsync on the disk every minute), 5 minutes each.
   A stuck loop or disk write means a hardware reset 60 s later. Killed
   without the magic close, it leaves the watchdog armed, so a hung reboot
   gets reset too. On 2026-11-16 BusyBox's daemon kept petting through a 6 h
-  freeze (logging stopped, `wifi-watch` stuck before its reboot, no panic).
+  freeze (logging stopped, the WiFi's watch stuck before its reboot, no panic).
   Escape hatch if a beat goes stale at every boot: `touch /etc/wdt-pet.off`
   (persistent overlay) in the minutes after a boot.
 - **pstore**: 1 MB of RAM at 128 MB (DT `reserved-memory/ramoops`) keeps the
@@ -319,9 +344,6 @@ The first full copies froze the box twice (2026-10-12); what it takes now:
   softirqs and the WireGuard/SSH crypto had starved the RCU kthread for 48 s.
 - An RCU stall panics, and a panic reboots: on 2026-10-25 a CPU stuck for
   hours while the watchdog daemon, on the other one, kept petting.
-- The WiFi's receive path split across the CPUs: its USB interrupt on CPU1,
-  its IP/TCP half (RPS) on CPU0, which keeps SATA and the timers. At 20 MB/s
-  of raw TCP, CPU0 went from 57 % to 27 % busy, same throughput (2026-11-04).
 - sshd reaps dropped sessions (`ClientAliveInterval 15`, `ClientAliveCountMax
   4`) and caps connection bursts (`MaxStartups 4:50:10`); clients should use
   one connection and long SFTP timeouts (vykar: `limits.connections: 1`,
@@ -329,12 +351,12 @@ The first full copies froze the box twice (2026-10-12); what it takes now:
 - 64 MB of zram swap (LZ4) as a memory cushion; dirty data reaches the disk
   within 2 s so logs survive a power cut.
 
-Ethernet instead of WiFi would remove the heaviest load (the USB dongle).
+Since 2026-11-21 the box is on Ethernet: the USB WiFi dongle, then the heaviest load, is gone.
 
 ### Throughput
 
 About **6 MB/s** end to end from a remote server (measured 2026-10-25),
-the box's CPU still the limit: raw TCP over WiFi does ~15 to 20 MB/s, SFTP
+the box's CPU the limit: raw TCP over the WiFi it then had did ~15 to 20 MB/s, SFTP
 (OpenSSH ChaCha20-Poly1305 on a 594 MHz MIPS32) ~10 MB/s on the LAN. When the
 box ran its own tailnet node it did 0.7 to 1 MB/s: Tailscale's userspace
 wireguard-go (pure-Go ChaCha20-Poly1305, no crypto instructions) took 1.5 of
