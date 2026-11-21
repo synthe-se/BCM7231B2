@@ -30,7 +30,6 @@ same way.
 | 0002 ata: libahci: warn only when ports are masked | libata (Damien Le Moal, Niklas Cassel) | ready |
 | 0003 net: phy: bcm7xxx: BCM7231 EPHY | net-next | ready |
 | 0004 net: bcmgenet: no EEE registers on v1/v2 | net (a fix, `Fixes:` + stable) | to verify, see below |
-| 0005 wifi: rtw88: usb: resubmit RX URBs | wireless (Ping-Ke Shih) | to verify, see below |
 | 0006 MIPS: BMIPS: SYS_SUPPORTS_ZBOOT | mips (Thomas Bogendoerfer) | ready |
 | 0101 net: bcmgenet: poll the PHY on v2 | (local) | workaround, root cause unknown |
 | 0102 MIPS: BMIPS: AIR 7310T board | (local) | goes up with the DTS and its bindings |
@@ -58,9 +57,5 @@ Open questions, per patch:
   if GENET v2 has no EEE at all, it should also stop advertising it (`phy_support_eee()` is
   called for every version but v1) and the ethtool EEE operations should refuse v2 as they
   refuse v1. Ask Florian Fainelli whether v2 has EEE.
-- **0005**: the URB is resubmitted right from its completion handler (GFP_ATOMIC). If an
-  error persists, that loops as fast as the bus answers; deferring to `rx_urb_work` would
-  bound it. What runs on the box today is the immediate resubmission (no WiFi restart since,
-  under the backups' load): decide, and test whichever is sent.
 - **0101**: check whether the link interrupt works now that the device tree has the right
   IRQ numbers; if it does, drop the patch.

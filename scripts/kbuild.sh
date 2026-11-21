@@ -9,7 +9,7 @@
 #   /kbuild  named Docker volume: extracted source + objects persist here,
 #            so rebuilds are incremental. `make kernel-clean` drops it.
 #
-# Env: KERNEL_VERSION (required, e.g. 7.3.1), DVB (1: DVB-T adapter), WIFI_DEBUG
+# Env: KERNEL_VERSION (required, e.g. 7.3.5), DVB (1: DVB-T adapter)
 #
 # The kernel changes are a patch series, kernel/patches/upstream/ (meant for upstream) then
 # kernel/patches/local/ (this board only), applied in order onto the kernel.org tarball. The DTS
@@ -60,11 +60,6 @@ cp /work/kernel/bcm7231.dtsi /work/kernel/bcm7231-airties-7310t.dts arch/mips/bo
 cp /work/kernel/bcm7231-kir.c drivers/input/keyboard/
 cp /work/kernel/bcm7231-dvb.c drivers/misc/
 
-# Firmware baked in via CONFIG_EXTRA_FIRMWARE (repo fw/, mounted at /work/fw)
-for f in rtw88/rtw8822b_fw.bin regulatory.db regulatory.db.p7s; do
-    [ -f "/work/fw/$f" ] || { echo "!! /work/fw/$f missing: CONFIG_EXTRA_FIRMWARE build will fail"; exit 1; }
-done
-
 # Configure: bmips_stb_defconfig + our minimal fragment
 echo "[*] Configuring (bmips_stb_defconfig + kernel/config/airties.config)..."
 make bmips_stb_defconfig
@@ -72,10 +67,6 @@ scripts/kconfig/merge_config.sh -m .config /work/kernel/config/airties.config >/
 if [ "${DVB:-0}" != "1" ]; then
     echo "[*] DVB=0: no DVB core, no AIR 7310T adapter (kernel/config/no-dvb.config)"
     scripts/kconfig/merge_config.sh -m .config /work/kernel/config/no-dvb.config >/dev/null
-fi
-if [ "${WIFI_DEBUG:-0}" = "1" ]; then
-    echo "[*] WIFI_DEBUG=1: adding kernel/config/debug-wifi.config"
-    scripts/kconfig/merge_config.sh -m .config /work/kernel/config/debug-wifi.config >/dev/null
 fi
 make olddefconfig
 
