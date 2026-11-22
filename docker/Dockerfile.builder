@@ -42,7 +42,8 @@ RUN CROSS=$(ls /opt/toolchain/bin/*-gcc | head -1 | sed 's/-gcc$//' | xargs base
 # is Tier 3 (no prebuilt std) AND defaults to MIPS32 R2, so they build std from source against a
 # custom R1 target spec (see scripts/rust-build.sh).
 # Last layer: refreshing Rust never invalidates the C toolchain cache.
-ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+# cargo fetches git dependencies itself: no git in the image
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo CARGO_NET_GIT_FETCH_WITH_CLI=false
 RUN wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
     && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-11-21 \
