@@ -190,7 +190,7 @@ The box serves [Maison](https://github.com/synthe-se/maison), the house's dashbo
 carries everything but Maison itself and the house's settings:
 
 - **/opt** (UBIFS on mtd6, formatted once by `rcS`): Maison's backend, web app and state,
-  pushed by Maison's `DEPLOY_TARGET=box ./deploy.sh` (same layout as on any host,
+  pushed by Maison's `./deploy.sh` (same layout as on any host,
   `/opt/maison`), clapier's data (`/opt/clapier`: `overlay/`, `garenne.bin`, `clapier.conf`
   with its arguments for this house). Nothing of the house's is in the image.
 - **Services**, from `inittab` (init restarts them), each waiting until its files exist:
@@ -210,7 +210,7 @@ carries everything but Maison itself and the house's settings:
   `deploy.sh status` and `logs` call them).
 
 ```bash
-make maison MAISON_DIR=../maison   # the backend (deploy.sh build runs it)
+make maison MAISON_DIR=../maison   # the backend (Maison's deploy.env names it as BACKEND_BUILD)
 make clapier CLAPIER_DIR=../clapier
 make mosquitto nft cacert          # in the image (make rootfs needs them)
 ```
