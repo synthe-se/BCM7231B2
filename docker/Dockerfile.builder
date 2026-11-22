@@ -5,7 +5,9 @@
 # downloaded a single time instead of once per tool.
 #
 # Build:  make builder   (docker build -t airties-builder -f docker/Dockerfile.builder docker)
-FROM --platform=linux/amd64 ubuntu:22.04
+# Debian stable, slim: the Bootlin toolchain's binaries want glibc (no Alpine), nothing else of a
+# distribution is needed
+FROM --platform=linux/amd64 debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -13,8 +15,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Userland: the rest; pkg-config for nftables (it finds libmnl and libnftnl through it).
 # mtd-utils: mkfs.ubifs + ubinize, which pack the rootfs (make ubi).
 RUN apt-get update -qq \
-    && apt-get install -y -qq \
-        build-essential wget xz-utils bzip2 file \
+    && apt-get install -y -qq --no-install-recommends \
+        build-essential wget ca-certificates xz-utils bzip2 file \
         bc flex bison libssl-dev libelf-dev python3 kmod cpio \
         pkg-config mtd-utils \
     && rm -rf /var/lib/apt/lists/*
